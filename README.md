@@ -64,6 +64,6 @@ This repository contains a collection of user scripts designed to enhance and st
 
 ### `github-to-codex-linker.js`
 
-- **Functionality**: This script bridges the gap between GitHub and Codex. It adds a "Work in Codex" button to the sidebar of a pull request page. To use it, you must first import your environment data using the settings icon (⚙️) which opens a modal to paste the JSON data from the `codex-environment-viewer.js` script. Once configured, the script automatically finds the correct Codex environment corresponding to the PR's repository and creates a direct link to open the PR's branch in that environment.
+- **Functionality**: This script bridges the gap between GitHub and Codex. It adds a "Work in Codex" button to the sidebar of a pull request page. To use it, you must first import your environment data using the settings icon (⚙️) which opens a modal to paste the JSON data from the `codex-environment-viewer.js` script. Once configured, the script automatically finds the correct Codex environment corresponding to the PR's repository and creates a direct link to start a new task in the PR's branch in Codex using that environment.
 
 - **Target Page**: `https://github.com/*/*/pull/*`
