@@ -14,94 +14,112 @@
   "use strict";
 
   /**
-   * Rules to apply badges to the tab title. The first matching rule wins.
-   * The order is prioritised from most to least critical state.
-   * Rules can use `selector` (for fast DOM checks) or `pattern` (for slower text checks).
+   * Define rules for badges.
+   * The order in this array determines the order they appear in the tab title.
    */
   const RULES = [
     {
-      badge: "🐇",
-      pattern:
-        /Currently processing new changes in this PR\. This may take a few minutes, please wait(?:\.\.\.)?/i, // CodeRabbit working
-    },
-    {
+      id: "failed",
       badge: "‼️",
-      selector: '[aria-label="failing checks"] .octicon-x-circle-fill', // Failed checks
+      selector: ".merge-status-item .octicon-x-circle-fill, .status-heading.color-fg-danger",
     },
     {
+      id: "conflict",
       badge: "🚧",
-      pattern: /This branch has conflicts that must be resolved/, // Merge conflicts
+      selector: ".merge-pr svg.octicon-alert-fill",
     },
     {
+      id: "draft",
+      badge: "📝",
+      selector: '.sticky-content span.State[reviewable_state="draft"]',
+    },
+    {
+      id: "unresolved",
       badge: "💬",
-      selector: 'details.review-thread-component[data-resolved="false"]', // Unresolved comments
+      selector: 'details.review-thread-component[data-resolved="false"]',
     },
     {
+      id: "merged",
       badge: "💎",
-      selector: "span.State--merged", // Merged PR
+      selector: ".sticky-content span.State--merged",
     },
     {
+      id: "cr-limit",
       badge: "⏱️",
-      pattern: /Please wait \d+ minutes? and \d+ seconds? before requesting another review\./i, // CodeRabbit rate limit
+      pattern: /Please wait \d+ minutes? and \d+ seconds? before requesting another review\./i,
     },
     {
-      badge: "🚫",
-      selector: '.merge-pr.Details svg.octicon-git-merge[aria-label="Closed"]'
-    }
+      id: "cr-working",
+      badge: "🐇",
+      pattern: /Currently processing new changes in this PR\. This may take a few minutes, please wait(?:\.\.\.)?/i,
+    },
   ];
 
-  /** Concatenate all badges for quick stripping. */
-  const BADGES = RULES.map((r) => r.badge);
+  const ALL_BADGES = RULES.map((r) => r.badge);
 
-  /** Remove any known badge from the start of a title. */
+  /**
+   * Cleans the title of all possible badges defined in RULES.
+   * This handles cases where multiple badges were previously applied.
+   */
   function stripBadges(title) {
-    for (const b of BADGES) {
-      if (title.startsWith(b)) {
-        title = title.slice(b.length);
+    let cleanTitle = title;
+    let changed;
+    do {
+      changed = false;
+      for (const badge of ALL_BADGES) {
+        const prefix = badge + " ";
+        if (cleanTitle.startsWith(prefix)) {
+          cleanTitle = cleanTitle.slice(prefix.length);
+          changed = true;
+        }
       }
-    }
-    return title.trimStart();
+    } while (changed);
+    return cleanTitle.trim();
   }
 
-  /** Evaluate the page and set the correct badge (or none). */
+  /** Checks if a specific rule matches the current document state. */
+  function isMatch(rule, bodyText) {
+    if (rule.selector && document.querySelector(rule.selector)) {
+      return true;
+    }
+    if (rule.pattern && rule.pattern.test(bodyText)) {
+      return true;
+    }
+    return false;
+  }
+
+  /** Evaluates all rules and updates the tab title with all applicable badges. */
   function updateTitle() {
-    let badges = [];
+    const bodyText = document.body.textContent;
 
-    // Find the first matching rule
-    for (const rule of RULES) {
-      if (rule.selector && document.querySelector(rule.selector)) {
-        badges.push(rule.badge);
-      }
-      if (rule.pattern && rule.pattern.test(document.body.textContent)) {
-        badges.push(rule.badge);
-      }
-    }
+    // Collect all badges that match their respective conditions
+    const activeBadges = RULES
+      .filter((rule) => isMatch(rule, bodyText))
+      .map((rule) => rule.badge);
 
-    const clean = stripBadges(document.title);
-    const desired = badges ? badges.join("") + " " + clean : clean;
+    const cleanBaseTitle = stripBadges(document.title);
+    const badgePrefix = activeBadges.length > 0 ? activeBadges.join(" ") + " " : "";
+    const desiredTitle = badgePrefix + cleanBaseTitle;
 
-    if (document.title !== desired) {
-      document.title = desired;
+    if (document.title !== desiredTitle) {
+      document.title = desiredTitle;
     }
   }
 
-  /** React to full loads, Turbo/PJAX navigations, and DOM mutations. */
+  /** Initialize listeners for Turbo, PJAX, and DOM mutations. */
   function init() {
     updateTitle();
 
     document.addEventListener("turbo:load", updateTitle, false);
     document.addEventListener("pjax:end", updateTitle, false);
 
-    let scheduled = false;
-    new MutationObserver(() => {
-      if (!scheduled) {
-        scheduled = true;
-        requestAnimationFrame(() => {
-          scheduled = false;
-          updateTitle();
-        });
-      }
-    }).observe(document.body, {
+    let timeout;
+    const observer = new MutationObserver(() => {
+      clearTimeout(timeout);
+      timeout = setTimeout(updateTitle, 100);
+    });
+
+    observer.observe(document.body, {
       childList: true,
       subtree: true,
       characterData: true,
