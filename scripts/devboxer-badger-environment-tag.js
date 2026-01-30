@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         DevBoxer Environment Title Tag + Status Badge
 // @namespace    https://github.com/leynos
-// @version      1.1
+// @version      1.2
 // @author       Payton McIntosh + o3 + GPT-5.2
 // @license      ISC
 // @description  Adds an env suffix and a status badge prefix to the page title
@@ -16,7 +16,8 @@
   const BADGE_SUCCESS = "✅️ ";
   const BADGE_ERROR   = "😵 ";
   const BADGE_WORKING = "🏗️ ";
-  const BADGES = [BADGE_SUCCESS, BADGE_ERROR, BADGE_WORKING];
+  const DECISION_BADGE = "🤔💭 ";
+  const BADGES = [BADGE_SUCCESS, BADGE_ERROR, BADGE_WORKING, DECISION_BADGE];
 
   // Make our env decoration unambiguous and easy to strip.
   const ENV_RE = /\s+\[env:[^\]]+\]$/;
@@ -96,10 +97,17 @@
     return document.querySelectorAll(".pt-1 img.block").length > 0;
   }
 
+  function needsDecisionBadge() {
+    // NOTE: your original selector was "pt-1 img.block" (a custom element tag),
+    // which is almost certainly meant to be ".pt-1 img.block".
+    return document.querySelectorAll("button.justify-center.whitespace-nowrap.text-sm.font-medium.transition-all").length > 0;
+  }
+
   function getDesiredBadge() {
     if (needsErrorBadge())   return BADGE_ERROR;   // priority: error > success > working
     if (needsSuccessBadge()) return BADGE_SUCCESS;
     if (needsWorkingBadge()) return BADGE_WORKING;
+    if (needsDecisionBadge()) return DECISION_BADGE;
     return "";
   }
 
