@@ -2,7 +2,7 @@
 // @name         GitHub Pull Request Badger
 // @description  Adds helpful emoji badges to GitHub pull request titles
 // @namespace    https://github.com/leynos
-// @version      1.0
+// @version      1.1
 // @author       Payton McIntosh + o3 + Gemini
 // @license      ISC
 // @match        https://github.com/*/*/pull/*
@@ -21,27 +21,27 @@
     {
       id: "failed",
       badge: "‼️",
-      selector: ".merge-status-item .octicon-x-circle-fill, .status-heading.color-fg-danger",
+      selector: '[aria-label="Checks"] .octicon-x-circle-fill, .status-heading.color-fg-danger',
     },
     {
       id: "conflict",
       badge: "🚧",
-      selector: ".merge-pr svg.octicon-alert-fill",
+      selector: '[aria-label="Conflicts"] svg.octicon-alert-fill',
     },
     {
       id: "draft",
       badge: "📝",
-      selector: '.sticky-content span.State[reviewable_state="draft"]',
+      selector: '[aria-label="Draft state"] .octicon.octicon-git-pull-request-draft',
     },
     {
       id: "unresolved",
-      badge: "💬",
+      badge: "🛜",
       selector: 'details.review-thread-component[data-resolved="false"]',
     },
     {
       id: "merged",
-      badge: "💎",
-      selector: ".sticky-content span.State--merged",
+      badge: "✔️",
+      selector: '[data-testid="mergeability-icon-wrapper"] .octicon.octicon-git-merge.fgColor-onEmphasis[aria-label="Merged"]',
     },
     {
       id: "cr-limit",
@@ -53,6 +53,11 @@
       badge: "🐇",
       pattern: /Currently processing new changes in this PR\. This may take a few minutes, please wait(?:\.\.\.)?/i,
     },
+    {
+      id: "refresh",
+      badge: "♻️",
+      selector: ".reload-banner-visible",
+    }
   ];
 
   const ALL_BADGES = RULES.map((r) => r.badge);
