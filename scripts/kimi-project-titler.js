@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Kimi Code - show project and branch in title/header
-// @namespace    https://violentmonkey.github.io/
+// @namespace    https://github.com/leynos/
 // @version      0.1.0
 // @description  Append active worktree project and branch to the page title and chat header
 // @author       Payton's friendly neighbourhood gremlin (GPT-5.4)
