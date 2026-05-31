@@ -67,3 +67,15 @@ This repository contains a collection of user scripts designed to enhance and st
 - **Functionality**: This script bridges the gap between GitHub and Codex. It adds a "Work in Codex" button to the sidebar of a pull request page. To use it, you must first import your environment data using the settings icon (⚙️) which opens a modal to paste the JSON data from the `codex-environment-viewer.js` script. Once configured, the script automatically finds the correct Codex environment corresponding to the PR's repository and creates a direct link to start a new task in the PR's branch in Codex using that environment.
 
 - **Target Page**: `https://github.com/*/*/pull/*`
+
+### `lody-proper-links-active-context-activity.js`
+
+- **Functionality**: This script adds real anchors to Lody session rows and GitHub PR badges, enriches the top bar with active repository and branch context, prefixes the browser tab title with that context, and marks active agent work in the title. It also cooperates with the Lody sidebar filter script.
+
+- **Target Pages**: `https://lody.ai/*` and `https://*.lody.ai/*`
+
+### `lody-session-sidebar-filter.js`
+
+- **Functionality**: This script adds a low-overhead filter control to the Lody session sidebar. It filters currently rendered sessions by repository, PR number, and branch, supports query prefixes such as `repo:`, `branch:`, and `pr:`, and cooperates with the Lody proper-links script.
+
+- **Target Pages**: `https://lody.ai/*`, `https://www.lody.ai/*`, and `https://*.lody.ai/*`
