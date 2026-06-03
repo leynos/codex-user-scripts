@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         GitHub Issue to Codex
 // @namespace    https://github.com/leynos
-// @version      1.6.0
+// @version      1.8.0
 // @description  Converts a GitHub issue to Markdown and creates a new task in Codex.
-// @author       Payton McIntosh + Gemini
+// @author       Payton McIntosh + Gemini + GPT-5.5 Pro
 // @license      ISC
 // @match        https://github.com/*/*/issues/*
 // @grant        GM_getValue
@@ -20,10 +20,70 @@
     let codexModalOverlay = null;
     let isInitializing = false; // Flag to prevent race conditions
 
+    const COMBINED_AI_AGENT_PROMPT_SUMMARY = '🤖 All AI agent prompts combined';
+    const CODE_RABBIT_BOILERPLATE_START_PATTERNS = [
+        /\n?(?:\*\*)?💡 User Tips(?:\*\*)?[\s\S]*$/u,
+        /\n?## Implementation Steps[\s\S]*$/u,
+        /\n?### 🚀 Next Steps[\s\S]*$/u,
+    ];
+
+    function normaliseAgentPromptText(text) {
+        return (text || '').replace(/\r\n?/g, '\n').trim();
+    }
+
+    function getDirectSummaryText(details) {
+        const summary = Array.from(details.children).find(child => child.tagName && child.tagName.toLowerCase() === 'summary');
+        return summary ? summary.textContent.replace(/\s+/g, ' ').trim() : '';
+    }
+
+    function extractCombinedAgentPrompt(element) {
+        const details = Array.from(element.querySelectorAll('details')).find(detailsElement => {
+            return getDirectSummaryText(detailsElement).includes(COMBINED_AI_AGENT_PROMPT_SUMMARY);
+        });
+
+        if (!details) {
+            return null;
+        }
+
+        const promptSource = details.querySelector('pre code')
+            || details.querySelector('pre')
+            || details.querySelector('clipboard-copy');
+
+        if (!promptSource) {
+            return null;
+        }
+
+        const promptText = promptSource.tagName.toLowerCase() === 'clipboard-copy'
+            ? promptSource.getAttribute('value')
+            : promptSource.textContent;
+
+        const prompt = normaliseAgentPromptText(promptText);
+        return prompt || null;
+    }
+
+    function replaceCodeRabbitBoilerplateWithCombinedPrompt(markdown, combinedAgentPrompt) {
+        if (!combinedAgentPrompt) {
+            return markdown;
+        }
+
+        const replacement = `### Detailed process\n\n${combinedAgentPrompt}`;
+        const firstBoilerplateMatch = CODE_RABBIT_BOILERPLATE_START_PATTERNS
+            .map(pattern => markdown.match(pattern))
+            .filter(match => match)
+            .sort((left, right) => left.index - right.index)[0];
+
+        if (!firstBoilerplateMatch) {
+            return `${markdown}\n\n${replacement}`.trim();
+        }
+
+        return `${markdown.slice(0, firstBoilerplateMatch.index).trim()}\n\n${replacement}`.trim();
+    }
+
     // --- Markdown Conversion Logic ---
     function convertToMarkdown(element) {
         if (!element) return '';
         let markdown = '';
+        const combinedAgentPrompt = extractCombinedAgentPrompt(element);
 
         function processNode(node) {
             if (node.nodeType === Node.TEXT_NODE) {
@@ -159,7 +219,8 @@
         markdown = processNode(elementClone);
 
         // Final cleanup
-        return markdown.replace(/\n{3,}/g, '\n\n').trim();
+        markdown = markdown.replace(/\n{3,}/g, '\n\n').trim();
+        return replaceCodeRabbitBoilerplateWithCombinedPrompt(markdown, combinedAgentPrompt);
     }
 
 
@@ -167,6 +228,64 @@
     function getRepoName() {
         const repoNameElement = document.querySelector('meta[name="octolytics-dimension-repository_nwo"]');
         return repoNameElement ? repoNameElement.content : null;
+    }
+
+    function getIssueNumber() {
+        const pathMatch = window.location.pathname.match(/\/issues\/(\d+)\/?$/u);
+        if (pathMatch) {
+            return pathMatch[1];
+        }
+
+        const issueNumberElement = document.querySelector('[class*="issueNumberText"]');
+        const issueNumberTextMatch = issueNumberElement?.textContent.match(/#(\d+)/u);
+        if (issueNumberTextMatch) {
+            return issueNumberTextMatch[1];
+        }
+
+        const documentTitleMatch = document.title.match(/Issue #(\d+)/u);
+        return documentTitleMatch ? documentTitleMatch[1] : null;
+    }
+
+    function getIssueTitle() {
+        const titleElement = document.querySelector('[data-testid="issue-title"]');
+        const titleFromDom = titleElement?.textContent.trim();
+        if (titleFromDom) {
+            return titleFromDom;
+        }
+
+        const documentTitleMatch = document.title.match(/^(.*?)\s+·\s+Issue #\d+\s+·\s+/u);
+        return documentTitleMatch ? documentTitleMatch[1].trim() : '';
+    }
+
+    function slugifyIssueTitle(title) {
+        const slug = (title || '')
+            .normalize('NFKD')
+            .replace(/[\u0300-\u036f]/gu, '')
+            .toLowerCase()
+            .trim()
+            .replace(/[^a-z0-9]+/gu, '-')
+            .replace(/^-+|-+$/gu, '');
+
+        return slug || 'issue';
+    }
+
+    function buildPostImplementationInstructions(issueNumber, issueTitle) {
+        if (!issueNumber) {
+            return '';
+        }
+
+        const branchName = `issue-${issueNumber}-${slugifyIssueTitle(issueTitle)}`;
+        return [
+            '---',
+            '',
+            `Following implementation, please rename this branch to \`${branchName}\`, tracking \`origin/${branchName}\`, then push and create a draft PR.`,
+            '',
+            `Include the issue number as \`(#${issueNumber})\` in the PR title, and state \`Closes #${issueNumber}\` in the PR summary.`,
+            '',
+            'Use `coderabbit review --agent` to validate your work after each major milestone, and clear all concerns prior to moving  onto the next. It is important that all applicable code quality and correctness gates succeed **before** each CodeRabbit review is requested, as CodeRabbit should not be used for errors that can be caught deterministically. If the code rabbit rate limit is exceeded, sleep (use the `vsleep` command) for $(shuf -i 15-30 -n 1) minutes before trying again. You\'re not in any rush, and there is no wallclock time limit for this task.',
+            '',
+            'Commit your changes frequently so you have an easy rollback and your work history can be reviewed through git timetravel.',
+        ].join('\n');
     }
 
     function findEnvironmentId(repoName, storedData) {
@@ -350,8 +469,13 @@
         // 2. Remove first heading of any level.
         fullMarkdown = fullMarkdown.replace(/^#+ .+\r?\n(\r?\n)?/, '');
 
-        // 3. Append issue URL.
+        // 3. Append issue URL and post-implementation branch/PR instructions.
         fullMarkdown += `\n\n---\n\nIssue: ${window.location.href}`;
+
+        const postImplementationInstructions = buildPostImplementationInstructions(getIssueNumber(), getIssueTitle());
+        if (postImplementationInstructions) {
+            fullMarkdown += `\n\n${postImplementationInstructions}`;
+        }
 
         // 4. Show modal.
         createCodexModal(fullMarkdown.trim());
