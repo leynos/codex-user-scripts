@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         GitHub PR Power-Up
 // @namespace    https://github.com/leynos
-// @version      1.5.8
+// @version      1.5.11
 // @license      ISC
 // @description  Combines extra comment buttons, adds helpers for Codex and CodeScene, and links PRs to Codex environments.
-// @author       Payton McIntosh + Gemini 3 Pro + Opus 4.5
+// @author       Payton McIntosh + Gemini + Opus 4.5 + GPT-5.4/5
 // @match        https://github.com/*/*/pull/*
 // @run-at       document-idle
 // @grant        GM_getValue
@@ -21,6 +21,17 @@
     const MARK_ACTIONS = 'data-vm-extra-installed';
     const STORAGE_KEY = 'codexEnvironments';
 
+    const CODERABBIT_PRELUDE_OPTIONS = [
+        {
+            label: 'Address concerns and run commit gates',
+            value: 'Please address the following concerns and ensure all commit gates succeed:',
+        },
+        {
+            label: 'Ask CodeRabbit whether concerns are resolved',
+            value: '@coderabbitai Have the following now been resolved?',
+        },
+    ];
+
     const ACTIONS_SELECTORS = [
         '.timeline-comment-actions',
         '.js-comment-header-actions',
@@ -28,6 +39,7 @@
     ];
 
     const SEL_KEBAB_DETAILS = 'details.details-overlay';
+    const REVIEW_THREAD_SELECTOR = 'review-thread-collapsible.review-thread-component, details.review-thread-component';
 
     // --- Octicon SVG Paths ---
     const TRASH_PATH_D = [
@@ -203,9 +215,14 @@
         });
     }
 
-    function createDisplayModal(title, content) {
+    function createDisplayModal(title, content, options = {}) {
         const existingModal = document.getElementById('userscript-display-modal-overlay');
         if (existingModal) existingModal.remove();
+
+        const preludeOptions = Array.isArray(options.preludeOptions) ? options.preludeOptions : [];
+        const bodyContent = typeof options.bodyContent === 'string' ? options.bodyContent : null;
+        const hasPreludeSelector = preludeOptions.length > 0 && bodyContent !== null;
+        const getModalContent = prelude => [prelude, bodyContent].filter(Boolean).join('\n\n');
 
         const modalOverlay = document.createElement('div');
         modalOverlay.id = 'userscript-display-modal-overlay';
@@ -227,11 +244,43 @@
         header.appendChild(closeButton);
         pane.appendChild(header);
 
+        let preludeSelect = null;
+        if (hasPreludeSelector) {
+            const preludeRow = document.createElement('div');
+            preludeRow.style.cssText = 'display: flex; gap: 0.5rem; align-items: center; padding: 1rem 1rem 0; flex-shrink: 0;';
+
+            const preludeLabel = document.createElement('label');
+            preludeLabel.textContent = 'Prelude';
+            preludeLabel.style.cssText = 'font-size: 14px; color: #e5e5e5; font-weight: 600;';
+            preludeLabel.htmlFor = 'userscript-display-modal-prelude';
+            preludeRow.appendChild(preludeLabel);
+
+            preludeSelect = document.createElement('select');
+            preludeSelect.id = 'userscript-display-modal-prelude';
+            preludeSelect.style.cssText = 'flex: 1; background: #1f2328; color: #e5e5e5; border: 1px solid #6e7781; border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 14px;';
+            preludeOptions.forEach(option => {
+                const opt = document.createElement('option');
+                opt.value = option.value;
+                opt.textContent = option.label;
+                preludeSelect.appendChild(opt);
+            });
+            preludeRow.appendChild(preludeSelect);
+            pane.appendChild(preludeRow);
+        }
+
         const textarea = document.createElement('textarea');
-        textarea.value = content;
+        textarea.value = hasPreludeSelector ? getModalContent(preludeSelect.value) : content;
         textarea.readOnly = true;
         textarea.style.cssText = `width: calc(100% - 2rem); min-height: 250px; margin: 1rem; background: #1f2328; color: #e5e5e5; border: 1px solid #6e7781; border-radius: 6px; padding: 0.5rem; font-family: monospace; resize: vertical; flex-grow: 1;`;
         pane.appendChild(textarea);
+
+        if (preludeSelect) {
+            preludeSelect.addEventListener('change', () => {
+                textarea.value = getModalContent(preludeSelect.value);
+                textarea.focus();
+                textarea.select();
+            });
+        }
 
         const footer = document.createElement('div');
         footer.style.cssText = 'padding: 1rem; border-top: 1px solid #424a53; display: flex; justify-content: flex-end; align-items: center; flex-shrink: 0;';
@@ -252,7 +301,7 @@
         closeButton.addEventListener('click', closeModal);
 
         copyButton.addEventListener('click', () => {
-            navigator.clipboard.writeText(content).then(() => {
+            navigator.clipboard.writeText(textarea.value).then(() => {
                 copyStatus.textContent = 'Copied!';
                 copyButton.disabled = true;
                 setTimeout(() => {
@@ -359,29 +408,68 @@
         return '```' + lang + '\n' + code + '\n```';
     }
 
+    function preToPlainText(preNode) {
+        return preNode.textContent.trim();
+    }
+
+    function preToPlainTextOrFence(preNode, { plain = false } = {}) {
+        const text = preToPlainText(preNode);
+        return plain ? text : '```\n' + text + '\n```';
+    }
+
+    function isAiPromptSummary(summaryText) {
+        return /prompt for (all review comments with )?ai agents?/i.test(summaryText);
+    }
+
+    function normalizeCodeRabbitHeading(text) {
+        return text.replace(/Prompt for AI Agents?/gi, 'Detailed instructions');
+    }
+
     /**
      * Process content within a blockquote, converting to markdown.
      * This handles the nested structure of CodeRabbit comments.
+     *
+     * @param {Element} blockquote - The blockquote element to process
+     * @param {number} depth - Nesting depth for header levels (0 = file level)
      */
-    function processBlockquoteContent(blockquote) {
+    function processBlockquoteContent(blockquote, depth = 0) {
         const lines = [];
+        // File-level headers are ####, sub-sections (like "Proposed fix") are #####
+        const headerPrefix = depth === 0 ? '####' : '#####';
 
         for (const child of Array.from(blockquote.children)) {
             const tag = child.tagName;
 
-            // Nested <details> - file-level grouping
+            // Nested <details> - could be file grouping or proposed fix sections
             if (tag === 'DETAILS') {
                 const summary = child.querySelector(':scope > summary');
                 const nestedBlockquote = child.querySelector(':scope > blockquote');
+                const nestedHighlight = child.querySelector(':scope > div.highlight');
+                const nestedSnippetPre = child.querySelector(':scope > div.snippet-clipboard-content > pre');
+                const nestedPre = child.querySelector(':scope > pre');
+                const summaryText = summary
+                    ? Array.from(summary.childNodes).map(inlineToMarkdown).join('').trim()
+                    : '';
+                const normalizedSummaryText = normalizeCodeRabbitHeading(summaryText);
 
-                if (summary) {
-                    // Extract summary text as a sub-header
-                    const summaryText = Array.from(summary.childNodes).map(inlineToMarkdown).join('').trim();
-                    lines.push(`\n#### ${summaryText}\n`);
+                if (summaryText) {
+                    lines.push(`\n${headerPrefix} ${normalizedSummaryText}\n`);
                 }
 
+                // Handle nested blockquote (file-level grouping)
                 if (nestedBlockquote) {
-                    lines.push(processBlockquoteContent(nestedBlockquote));
+                    lines.push(processBlockquoteContent(nestedBlockquote, depth + 1));
+                }
+
+                // GitHub renders CodeRabbit's AI-agent prompt blocks as
+                // .snippet-clipboard-content > pre. Those are instructions, not code samples,
+                // so keep them as plain text under the details heading.
+                if (nestedSnippetPre) {
+                    lines.push('\n' + preToPlainTextOrFence(nestedSnippetPre, { plain: isAiPromptSummary(summaryText) }) + '\n');
+                } else if (nestedHighlight) {
+                    lines.push('\n' + codeBlockToMarkdown(nestedHighlight) + '\n');
+                } else if (nestedPre) {
+                    lines.push('\n' + preToPlainTextOrFence(nestedPre, { plain: isAiPromptSummary(summaryText) }) + '\n');
                 }
                 continue;
             }
@@ -404,15 +492,24 @@
                 continue;
             }
 
+            // Code or instruction block rendered by GitHub markdown.
+            if (tag === 'DIV' && child.classList.contains('snippet-clipboard-content')) {
+                const pre = child.querySelector(':scope > pre');
+                if (pre) {
+                    lines.push('\n' + preToPlainTextOrFence(pre) + '\n');
+                }
+                continue;
+            }
+
             // Standalone <pre>
             if (tag === 'PRE') {
-                lines.push('\n```\n' + child.textContent.trim() + '\n```\n');
+                lines.push('\n' + preToPlainTextOrFence(child) + '\n');
                 continue;
             }
 
             // Headers
             if (tag === 'H3' || tag === 'H4' || tag === 'H5') {
-                lines.push(`#### ${child.textContent.trim()}`);
+                lines.push(`${headerPrefix} ${child.textContent.trim()}`);
                 continue;
             }
         }
@@ -478,23 +575,37 @@
         if (isCodeScene) {
             const aiPromptBtn = makeHeaderButton('Generate AI Prompt', COSTRUCTOR_PATH_D, { viewBox: '0 0 16 16' });
             aiPromptBtn.addEventListener('click', e => {
-                e.preventDefault(); e.stopPropagation();
-                const threadRoot = root.closest('details.review-thread-component');
-                if (!threadRoot) return;
+                e.preventDefault();
+                e.stopPropagation();
 
                 try {
-                    const fileLinkEl = threadRoot.querySelector('summary a.Link--primary');
+                    const threadRoot = root.closest(REVIEW_THREAD_SELECTOR);
+                    if (!threadRoot) {
+                        throw new Error('Could not locate the review thread container.');
+                    }
+
+                    const fileLinkEl =
+                        threadRoot.querySelector('a.text-mono.text-small.Link--primary[href*="#diff-"]') ||
+                        threadRoot.querySelector('a.text-mono.Link--primary[href*="#diff-"]') ||
+                        threadRoot.querySelector('a.Link--primary[href*="#diff-"]') ||
+                        threadRoot.querySelector('a[href*="/pull/"][href*="#diff-"]');
+
+                    if (!fileLinkEl) {
+                        throw new Error('Could not locate the file link for this thread.');
+                    }
+
                     const filename = fileLinkEl.textContent.trim();
                     const fileMarkdown = `[${filename}](${fileLinkEl.href})`;
 
                     let lineRangeText = 'Comment on file';
-                    const lineInfoContainer = threadRoot.querySelector('.f6.py-2.px-3');
-                    if (lineInfoContainer) {
-                        const startLineEl = lineInfoContainer.querySelector('.js-multi-line-preview-start');
-                        const endLineEl = lineInfoContainer.querySelector('.js-multi-line-preview-end');
-                        const singleLineEl = lineInfoContainer.querySelector('.js-single-line-preview');
-                        if (startLineEl && endLineEl) lineRangeText = `Comment on lines ${startLineEl.textContent.trim()} to ${endLineEl.textContent.trim()}`;
-                        else if (singleLineEl) lineRangeText = `Comment on line ${singleLineEl.textContent.trim()}`;
+                    const startLineEl = threadRoot.querySelector('.js-multi-line-preview-start');
+                    const endLineEl = threadRoot.querySelector('.js-multi-line-preview-end');
+                    const singleLineEl = threadRoot.querySelector('.js-single-line-preview');
+
+                    if (startLineEl && endLineEl) {
+                        lineRangeText = `Comment on lines ${startLineEl.textContent.trim()} to ${endLineEl.textContent.trim()}`;
+                    } else if (singleLineEl) {
+                        lineRangeText = `Comment on line ${singleLineEl.textContent.trim()}`;
                     }
 
                     const codeRows = threadRoot.querySelectorAll('table.diff-table td.blob-code:not(.blob-code-hunk)');
@@ -503,32 +614,46 @@
                     const codeBlock = codeSnippet ? `~~~${lang}\n${codeSnippet}\n~~~` : "";
 
                     const commentBody = root.querySelector('.comment-body.markdown-body');
-                    const issueP = commentBody.querySelector('p:first-of-type');
+                    if (!commentBody) {
+                        throw new Error('Could not locate the CodeScene comment body.');
+                    }
+
+                    const issueP = commentBody.querySelector('p:first-of-type') || commentBody.querySelector('p');
+                    if (!issueP) {
+                        throw new Error('Could not locate the CodeScene issue summary.');
+                    }
+
                     const issueLink = issueP.querySelector('a');
-                    let issueText = issueP.innerText;
+                    let issueText = issueP.innerText.trim();
                     if (issueLink) {
                         const linkText = issueLink.textContent.trim();
-                        issueText = issueP.innerText.replace(linkText, `[${linkText}](${issueLink.href})`);
+                        issueText = issueP.innerText.replace(linkText, `[${linkText}](${issueLink.href})`).trim();
                     }
 
                     const output = [
-                        "@coderabbitai Please suggest a fix for this issue and supply a prompt for an AI coding agent to enable it to apply the fix:",
-                        fileMarkdown, lineRangeText, codeBlock, issueText
+                        "@coderabbitai Please suggest a fix for this issue and supply a prompt for an AI coding agent to enable it to apply the fix. Include the file and symbol names indicated in the issue at the head of your response.",
+                        fileMarkdown,
+                        lineRangeText,
+                        codeBlock,
+                        issueText
                     ].filter(Boolean).join("\n\n");
 
                     createDisplayModal('AI Prompt for CodeScene', output);
                 } catch (err) {
                     console.error("Error generating AI prompt:", err);
                     aiPromptBtn.classList.add('color-fg-danger');
+                    aiPromptBtn.setAttribute('title', err.message || 'Unable to generate the AI prompt.');
                 }
             });
             if (kebab) kebab.insertAdjacentElement('beforebegin', aiPromptBtn);
             else actions.prepend(aiPromptBtn);
         }
 
+
         if (isCodeRabbitBanner) {
             const body = root.querySelector('.comment-body.markdown-body');
             const targetSections = ["Outside diff range comments", "Duplicate comments", "Nitpicks"];
+            const targetSectionsWithoutCopiedHeadings = ["Outside diff range comments", "Duplicate comments"];
 
             // Verification check: Only show the button if at least one target <details> block exists
             const hasTargetDetails = body && Array.from(body.querySelectorAll('details > summary')).some(summary => {
@@ -551,19 +676,28 @@
                         if (targetSections.some(s => summaryText.includes(s))) {
                             const extracted = extractSectionMarkdown(details);
                             if (extracted) {
-                                const sectionOutput = `### ${extracted.title}\n\n${extracted.content}`
-                                    .replace(/Prompt for AI agents?/g, "Detailed instructions");
-                                sections.push(sectionOutput);
+                                const shouldOmitHeading = targetSectionsWithoutCopiedHeadings.some(s => extracted.title.includes(s));
+                                const sectionOutput = (shouldOmitHeading
+                                    ? extracted.content
+                                    : `### ${extracted.title}\n\n${extracted.content}`)
+                                    .replace(/Prompt for AI Agents?/gi, "Detailed instructions")
+                                    .trim();
+                                if (sectionOutput) sections.push(sectionOutput);
                             }
                         }
                     });
 
                     if (sections.length > 0) {
+                        const bodyOutput = sections.join("\n\n");
+                        const defaultPrelude = CODERABBIT_PRELUDE_OPTIONS[0].value;
                         const finalOutput = [
-                            "Please address the following concerns and ensure all commit gates succeed:",
-                            ...sections
+                            defaultPrelude,
+                            bodyOutput
                         ].join("\n\n");
-                        createDisplayModal('CodeRabbit Summary', finalOutput);
+                        createDisplayModal('CodeRabbit Summary', finalOutput, {
+                            preludeOptions: CODERABBIT_PRELUDE_OPTIONS,
+                            bodyContent: bodyOutput,
+                        });
                     } else {
                         copyBtn.classList.add('color-fg-danger');
                         copyBtn.setAttribute('title', 'Target sections not found in this banner.');
