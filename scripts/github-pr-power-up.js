@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         GitHub PR Power-Up
 // @namespace    https://github.com/leynos
-// @version      1.5.11
+// @version      1.5.12
 // @license      ISC
-// @description  Combines extra comment buttons, adds helpers for Codex and CodeScene, and links PRs to Codex environments.
-// @author       Payton McIntosh + Gemini + Opus 4.5 + GPT-5.4/5
+// @description  Combines extra comment buttons, adds helpers for Codex, CodeScene, CodeRabbit, and Sourcery, and links PRs to Codex environments.
+// @author       Payton McIntosh + Gemini + GPT-5.4/5
 // @match        https://github.com/*/*/pull/*
 // @run-at       document-idle
 // @grant        GM_getValue
@@ -31,6 +31,12 @@
             value: '@coderabbitai Have the following now been resolved?',
         },
     ];
+
+    const SOURCERY_WITH_COMMENTS_PROMPT = [
+        '@coderabbitai Have the following now been resolved?',
+        'Annul any requirements that violate the en-GB-oxendict spelling (-ize / -yse / -our) conventions (for example a request to replace "normalize" with "normalise" or "artefact" with "artifact"), or where the requirement unnecessarily increases cyclomatic complexity.',
+    ].join('\n\n');
+    const SOURCERY_GENERAL_ONLY_PROMPT = '@coderabbitai Have the following now been resolved?';
 
     const ACTIONS_SELECTORS = [
         '.timeline-comment-actions',
@@ -546,6 +552,77 @@
         };
     }
 
+
+    // --- START: Sourcery Markdown Extraction ---
+
+    function getSourceryPromptDetails(body) {
+        if (!body) return null;
+        return Array.from(body.querySelectorAll(':scope > details, :scope > div > details, details')).find(details => {
+            const summary = details.querySelector(':scope > summary');
+            return /Prompt for AI Agents?/i.test(summary?.textContent || '');
+        }) || null;
+    }
+
+    function getSourceryPromptText(body) {
+        const details = getSourceryPromptDetails(body);
+        if (!details) return null;
+
+        const clipboardCopy = details.querySelector('clipboard-copy[value]');
+        if (clipboardCopy) {
+            const value = clipboardCopy.getAttribute('value') || '';
+            if (value.trim()) return value.trim();
+        }
+
+        const snippetPre = details.querySelector('div.snippet-clipboard-content > pre');
+        if (snippetPre?.textContent?.trim()) return snippetPre.textContent.trim();
+
+        const pre = details.querySelector('pre');
+        return pre?.textContent?.trim() || null;
+    }
+
+    function stripSourceryPromptIntro(promptText) {
+        return (promptText || '')
+            .replace(/^Please address the comments from this code review:\s*/i, '')
+            .replace(/\r\n/g, '\n')
+            .trim();
+    }
+
+    function hasSourceryIndividualComments(reviewText) {
+        return /^##\s+Individual Comments\s*$/im.test(reviewText || '');
+    }
+
+    function extractSourceryOverallComments(reviewText) {
+        const lines = (reviewText || '').replace(/\r\n/g, '\n').split('\n');
+        const startIndex = lines.findIndex(line => /^##\s+Overall Comments\s*$/i.test(line.trim()));
+        if (startIndex === -1) return (reviewText || '').trim();
+
+        const afterHeading = lines.slice(startIndex + 1);
+        const nextHeadingIndex = afterHeading.findIndex(line => /^##\s+/.test(line.trim()));
+        const overallLines = nextHeadingIndex === -1
+            ? afterHeading
+            : afterHeading.slice(0, nextHeadingIndex);
+        return overallLines.join('\n').trim();
+    }
+
+    function buildSourceryCodeRabbitMessage(body) {
+        const promptText = getSourceryPromptText(body);
+        const reviewText = stripSourceryPromptIntro(promptText);
+        if (!reviewText) return null;
+
+        if (hasSourceryIndividualComments(reviewText)) {
+            return [
+                SOURCERY_WITH_COMMENTS_PROMPT,
+                `~~~\n${reviewText}\n~~~`,
+            ].join('\n\n');
+        }
+
+        const overallComments = extractSourceryOverallComments(reviewText);
+        if (!overallComments) return null;
+        return [SOURCERY_GENERAL_ONLY_PROMPT, overallComments].join('\n\n');
+    }
+
+    // --- END: Sourcery Markdown Extraction ---
+
     // --- END: CodeRabbit Markdown Extraction ---
 
     // --- END: UI Generation & Manipulation ---
@@ -565,9 +642,11 @@
         const isTimelineComment = root.classList.contains('timeline-comment');
         const isReviewComment = root.classList.contains('review-comment');
 
-        // 2. Identity Check (CodeRabbit Banner specific)
+        // 2. Identity Check (app-specific review banners)
         const coderabbitAuthor = root.querySelector('h3.f5 a.author[href="/apps/coderabbitai"]');
         const isCodeRabbitBanner = isTimelineComment && !!coderabbitAuthor;
+        const sourceryAuthor = root.querySelector('h3.f5 a.author[href="/apps/sourcery-ai"]');
+        const isSourceryBanner = isTimelineComment && !!sourceryAuthor;
 
         const isCodeScene = root.querySelector('a.author[href="/apps/codescene-delta-analysis"]');
 
@@ -701,6 +780,30 @@
                     } else {
                         copyBtn.classList.add('color-fg-danger');
                         copyBtn.setAttribute('title', 'Target sections not found in this banner.');
+                    }
+                });
+                if (kebab) kebab.insertAdjacentElement('beforebegin', copyBtn);
+                else actions.prepend(copyBtn);
+            }
+        }
+
+
+        if (isSourceryBanner) {
+            const body = root.querySelector('.comment-body.markdown-body');
+            const hasSourceryPrompt = !!getSourceryPromptText(body);
+
+            if (hasSourceryPrompt) {
+                const copyBtn = makeHeaderButton('Sourcery review message for CodeRabbit', COPY_ICON_PATH_D, { viewBox: '0 0 16 16' });
+                copyBtn.addEventListener('click', e => {
+                    e.preventDefault();
+                    e.stopPropagation();
+
+                    const output = buildSourceryCodeRabbitMessage(body);
+                    if (output) {
+                        createDisplayModal('Sourcery Review Message', output);
+                    } else {
+                        copyBtn.classList.add('color-fg-danger');
+                        copyBtn.setAttribute('title', 'Sourcery prompt not found in this banner.');
                     }
                 });
                 if (kebab) kebab.insertAdjacentElement('beforebegin', copyBtn);
