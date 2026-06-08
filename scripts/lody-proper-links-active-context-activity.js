@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Lody proper links, active context title, and activity indicator
 // @namespace    https://github.com/leynos
-// @version      0.4.1
+// @version      0.4.2
 // @description  Adds real anchors to Lody sessions and GitHub PR badges, prefixes the tab title with active context, marks active agent work, enriches the top bar, and cooperates with the sidebar filter.
-// @author       Payton McIntosh + GPT-5
+// @author       Payton McIntosh + GPT-5.5
 // @license      ISC
 // @match        https://lody.ai/*
 // @match        https://*.lody.ai/*
@@ -42,7 +42,7 @@
 
   const SESSION_ANCHOR_SELECTOR = 'a[data-lody-session-anchor="true"]';
   const PR_ANCHOR_SELECTOR = 'a[data-lody-github-pr-anchor="true"]';
-  const TRANSCRIPT_ACTIVITY_CANVAS_SELECTOR = 'canvas[aria-hidden="true"][width="72"][height="72"]';
+  const TRANSCRIPT_ACTIVITY_CANVAS_SELECTOR = 'canvas[aria-hidden="true"][width][height]';
   const TOP_BAR_CONTEXT_ATTR = 'data-lody-top-bar-context';
   const TOP_BAR_BRANCH_TEXT_ATTR = 'data-lody-top-bar-branch-text';
   const TOP_BAR_EXTRA_CONTEXT_ATTR = 'data-lody-top-bar-extra-context';
@@ -56,6 +56,8 @@
   const PR_NUMBER_RE = /\bPR\s+#(\d+)\b/i;
   const PR_TEXT_RE = /#(\d+)\b/;
   const ACTIVITY_LABEL_RE = /^[A-Za-z][A-Za-z -]{1,39}$/;
+  const ACTIVITY_CANVAS_MIN_INTRINSIC_SIZE = 16;
+  const ACTIVITY_CANVAS_MAX_INTRINSIC_SIZE = 192;
 
   const RESERVED_FIRST_PATH_SEGMENTS = new Set([
     'api',
@@ -370,6 +372,7 @@
     anchor.dataset.lodySessionId = sessionId;
   }
 
+
   function buttonLooksLikeGitHubPrBadge(button) {
     if (!(button instanceof HTMLButtonElement)) {
       return false;
@@ -421,6 +424,7 @@
 
     return REPO_FULL_NAME_RE.test(repoFullName) ? repoFullName : null;
   }
+
 
   function getRepoFullNameForPrButton(button) {
     return (
@@ -742,6 +746,11 @@
     }
 
     return null;
+  }
+
+
+  function hasClassTokens(element, tokens) {
+    return tokens.every((token) => element.classList.contains(token));
   }
 
   function findTopBarRootForElement(element) {
@@ -1359,8 +1368,38 @@
     });
   }
 
+  function getCanvasIntrinsicSize(canvas) {
+    const width = Number.parseInt(canvas.getAttribute('width') ?? `${canvas.width}`, 10);
+    const height = Number.parseInt(canvas.getAttribute('height') ?? `${canvas.height}`, 10);
+
+    return { width, height };
+  }
+
+  function isPlausibleActivityCanvasSize(canvas) {
+    const { width, height } = getCanvasIntrinsicSize(canvas);
+
+    if (!Number.isFinite(width) || !Number.isFinite(height)) {
+      return false;
+    }
+
+    if (
+      width < ACTIVITY_CANVAS_MIN_INTRINSIC_SIZE ||
+      width > ACTIVITY_CANVAS_MAX_INTRINSIC_SIZE ||
+      height < ACTIVITY_CANVAS_MIN_INTRINSIC_SIZE ||
+      height > ACTIVITY_CANVAS_MAX_INTRINSIC_SIZE
+    ) {
+      return false;
+    }
+
+    return Math.abs(width - height) <= Math.max(2, Math.round(Math.max(width, height) * 0.15));
+  }
+
   function isTranscriptActivityCanvas(canvas) {
     if (!(canvas instanceof HTMLCanvasElement)) {
+      return false;
+    }
+
+    if (!isPlausibleActivityCanvasSize(canvas)) {
       return false;
     }
 
@@ -1400,6 +1439,7 @@
       Boolean(node.querySelector(TRANSCRIPT_ACTIVITY_CANVAS_SELECTOR))
     );
   }
+
 
   function scanTranscriptActivityNow() {
     const root = findMainPaneRoot();
@@ -1635,6 +1675,7 @@
       scheduleTitleUpdate();
     });
   }
+
 
   function scheduleCooperativeUserscriptRefresh() {
     if (scheduledCooperativeRefreshFrame) {
