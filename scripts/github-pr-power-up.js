@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         GitHub PR Power-Up
 // @namespace    https://github.com/leynos
-// @version      1.5.12
+// @version      1.5.14
 // @license      ISC
-// @description  Combines extra comment buttons, adds helpers for Codex, CodeScene, CodeRabbit, and Sourcery, and links PRs to Codex environments.
+// @description  Combines extra comment buttons, adds helpers for Codex, CodeScene, CodeRabbit, Sourcery, and review prompts, and links PRs to Codex environments.
 // @author       Payton McIntosh + Gemini + GPT-5.4/5
 // @match        https://github.com/*/*/pull/*
 // @run-at       document-idle
@@ -33,8 +33,9 @@
     ];
 
     const SOURCERY_WITH_COMMENTS_PROMPT = [
-        '@coderabbitai Have the following now been resolved?',
-        'Annul any requirements that violate the en-GB-oxendict spelling (-ize / -yse / -our) conventions (for example a request to replace "normalize" with "normalise" or "artefact" with "artifact"), or where the requirement unnecessarily increases cyclomatic complexity.',
+        '@coderabbitai Has this now been resolved in the latest commit?',
+        'Use codegraph analysis to determine your answer.',
+        'If this comment is now resolved, please mark it as such using the API. Otherwise, please provide an AI agent prompt for the remaining work to be done to address this comment.',
     ].join('\n\n');
     const SOURCERY_GENERAL_ONLY_PROMPT = '@coderabbitai Have the following now been resolved?';
 
@@ -366,7 +367,7 @@
             return '_' + Array.from(node.childNodes).map(inlineToMarkdown).join('') + '_';
         }
         if (tag === 'A') {
-            const href = node.getAttribute('href') || '';
+            const href = getAbsoluteHref(node) || '';
             const text = Array.from(node.childNodes).map(inlineToMarkdown).join('');
             return `[${text}](${href})`;
         }
@@ -552,6 +553,230 @@
         };
     }
 
+    // --- START: PR Description Review Context Extraction ---
+
+    function getAbsoluteHref(anchor) {
+        const href = anchor?.getAttribute?.('href') || anchor?.href || '';
+        if (!href) return '';
+
+        try {
+            return new URL(href, window.location.href).href;
+        } catch {
+            return href;
+        }
+    }
+
+    function escapeRegExp(text) {
+        return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+
+    function cleanInlineText(text) {
+        return (text || '').replace(/\s+/g, ' ').trim();
+    }
+
+    function cleanMarkdownOutput(text) {
+        return (text || '')
+            .replace(/\r\n/g, '\n')
+            .replace(/[ \t]+\n/g, '\n')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
+    }
+
+    function elementChildrenToMarkdown(root) {
+        const blocks = Array.from(root?.children || [])
+            .map(child => blockElementToMarkdown(child))
+            .map(cleanMarkdownOutput)
+            .filter(Boolean);
+        return cleanMarkdownOutput(blocks.join('\n\n'));
+    }
+
+    function detailsToMarkdown(detailsNode) {
+        const summary = detailsNode.querySelector(':scope > summary');
+        const summaryText = summary
+            ? Array.from(summary.childNodes).map(inlineToMarkdown).join('').trim()
+            : 'Details';
+        const contentBlocks = Array.from(detailsNode.children || [])
+            .filter(child => child !== summary)
+            .map(child => blockElementToMarkdown(child))
+            .map(cleanMarkdownOutput)
+            .filter(Boolean);
+        const detailsLines = [
+            '<details>',
+            `<summary>${summaryText}</summary>`,
+            contentBlocks.length ? '\n' + contentBlocks.join('\n\n') + '\n' : '',
+            '</details>',
+        ];
+        return detailsLines.filter(line => line !== '').join('\n');
+    }
+
+    function blockquoteToMarkdown(blockquoteNode) {
+        const markdown = elementChildrenToMarkdown(blockquoteNode);
+        if (!markdown) return '';
+
+        return markdown
+            .split('\n')
+            .map(line => line ? `> ${line}` : '>')
+            .join('\n');
+    }
+
+    function blockElementToMarkdown(child) {
+        const tag = child?.tagName;
+        if (!tag) return '';
+
+        if (/^H[1-6]$/.test(tag)) {
+            const level = Number(tag.slice(1));
+            const headingText = Array.from(child.childNodes).map(inlineToMarkdown).join('').trim();
+            return `${'#'.repeat(level)} ${headingText}`.trim();
+        }
+        if (tag === 'P') return paragraphToMarkdown(child);
+        if (tag === 'UL' || tag === 'OL') return listToMarkdown(child);
+        if (tag === 'BLOCKQUOTE') return blockquoteToMarkdown(child);
+        if (tag === 'DETAILS') return detailsToMarkdown(child);
+        if (tag === 'HR') return '---';
+        if (tag === 'DIV' && child.classList.contains('highlight')) return codeBlockToMarkdown(child);
+        if (tag === 'DIV' && child.classList.contains('snippet-clipboard-content')) {
+            const pre = child.querySelector(':scope > pre');
+            return pre ? preToPlainTextOrFence(pre) : '';
+        }
+        if (tag === 'PRE') return preToPlainTextOrFence(child);
+        if (tag === 'DIV' || tag === 'SECTION') {
+            return elementChildrenToMarkdown(child) || cleanInlineText(child.innerText || child.textContent);
+        }
+
+        return cleanInlineText(child.innerText || child.textContent);
+    }
+
+    function getPrTitle() {
+        const titleEl =
+            document.querySelector('h1[data-component="PH_Title"] .markdown-title') ||
+            document.querySelector('h1 .markdown-title') ||
+            document.querySelector('.js-issue-title') ||
+            document.querySelector('[data-testid="issue-title"]') ||
+            document.querySelector('bdi.js-issue-title');
+        const title = titleEl?.textContent?.trim();
+        if (title) return title;
+
+        const documentTitle = (document.title || '').split('·')[0].trim();
+        return documentTitle || 'this pull request';
+    }
+
+    function normaliseIssueTitleCandidate(candidate, issueNumber) {
+        const escapedIssueNumber = escapeRegExp(issueNumber);
+        const title = cleanInlineText(candidate)
+            .replace(new RegExp(`^Issue\\s+#${escapedIssueNumber}\\s*[:\\-–—]?\\s*`, 'i'), '')
+            .replace(new RegExp(`^#${escapedIssueNumber}\\s*[:\\-–—]?\\s*`, 'i'), '')
+            .replace(/\s+by\s+\S+\s*$/i, '')
+            .replace(new RegExp(`\\s*\\(#${escapedIssueNumber}\\)\\s*$`), '')
+            .trim();
+        return title && title !== `#${issueNumber}` ? title : null;
+    }
+
+    function titleWithoutIssueNumber(title, issueNumber) {
+        const escapedIssueNumber = escapeRegExp(issueNumber);
+        return cleanInlineText(title)
+            .replace(new RegExp(`\\s*\\(#${escapedIssueNumber}\\)\\s*$`), '')
+            .replace(new RegExp(`\\s+#${escapedIssueNumber}\\s*$`), '')
+            .trim();
+    }
+
+    function findClosingIssueReference(body) {
+        if (!body) return null;
+
+        for (const anchor of Array.from(body.querySelectorAll('a[href*="/issues/"]'))) {
+            const href = getAbsoluteHref(anchor);
+            const issueMatch = href.match(/\/issues\/(\d+)(?:[/?#]|$)/);
+            if (!issueMatch) continue;
+
+            const containingBlock = anchor.closest('p, li, div') || anchor;
+            if (!/\bCloses\b/i.test(containingBlock.textContent || '')) continue;
+
+            const issueNumber = issueMatch[1];
+            const titleCandidate = [
+                anchor.getAttribute('aria-label'),
+                anchor.getAttribute('title'),
+                anchor.getAttribute('data-hovercard-title'),
+            ].map(candidate => normaliseIssueTitleCandidate(candidate, issueNumber)).find(Boolean);
+
+            return {
+                href,
+                number: issueNumber,
+                title: titleCandidate,
+            };
+        }
+
+        return null;
+    }
+
+    function looksLikeTaskId(text) {
+        return /^[0-9]+(?:\.[0-9]+)+(?:[-_.]?[A-Za-z0-9]+)?$/.test((text || '').trim());
+    }
+
+    function parseTaskFromPrTitle(title) {
+        const fullTitle = cleanInlineText(title) || 'this pull request';
+        let baseTitle = fullTitle;
+        const trailingParts = [];
+        let match = baseTitle.match(/\s*\(([^()]*)\)\s*$/);
+
+        while (match) {
+            trailingParts.unshift(match[1].trim());
+            baseTitle = baseTitle.slice(0, match.index).trim();
+            match = baseTitle.match(/\s*\(([^()]*)\)\s*$/);
+        }
+
+        const taskIndex = trailingParts.map(looksLikeTaskId).lastIndexOf(true);
+        if (taskIndex === -1) return { title: fullTitle, taskId: null };
+
+        const remainingParts = trailingParts
+            .filter((_, index) => index !== taskIndex)
+            .map(part => `(${part})`);
+        const taskTitle = [baseTitle, ...remainingParts].filter(Boolean).join(' ').trim();
+        return {
+            title: taskTitle || fullTitle,
+            taskId: trailingParts[taskIndex],
+        };
+    }
+
+    function quoteForPrompt(text) {
+        return cleanInlineText(text).replace(/"/g, '\\"');
+    }
+
+    function buildIssueBannerIntro(body) {
+        const prTitle = getPrTitle();
+        const issueReference = findClosingIssueReference(body);
+
+        if (issueReference) {
+            const issueTitle = titleWithoutIssueNumber(prTitle, issueReference.number) || issueReference.title || `#${issueReference.number}`;
+            return `You are working on GitHub issue "${quoteForPrompt(issueTitle)}" (#${issueReference.number}) for which you have already implemented a fix. You are now working on review feedback.`;
+        }
+
+        const task = parseTaskFromPrTitle(prTitle);
+        const taskLabel = task.taskId
+            ? `"${quoteForPrompt(task.title)}" (${task.taskId})`
+            : `"${quoteForPrompt(task.title)}"`;
+        return `You are working on task ${taskLabel} for which you have already provided an implementation. You are now working on review feedback.`;
+    }
+
+    function buildIssueBannerReviewMessage(body) {
+        const intro = buildIssueBannerIntro(body);
+        const descriptionMarkdown = elementChildrenToMarkdown(body);
+        return [intro, descriptionMarkdown].filter(Boolean).join('\n\n');
+    }
+
+    function isFirstTimelineCommentWithBody(root) {
+        const firstBody = document.querySelector('.timeline-comment .comment-body.markdown-body');
+        return !!firstBody && root.contains(firstBody);
+    }
+
+    function isIssueBannerRoot(root, body) {
+        return !!(
+            root.querySelector('.js-issue-body, [data-testid="issue-body"], [data-test-selector="issue-body"]') ||
+            findClosingIssueReference(body) ||
+            isFirstTimelineCommentWithBody(root)
+        );
+    }
+
+    // --- END: PR Description Review Context Extraction ---
+
 
     // --- START: Sourcery Markdown Extraction ---
 
@@ -649,6 +874,13 @@
         const isSourceryBanner = isTimelineComment && !!sourceryAuthor;
 
         const isCodeScene = root.querySelector('a.author[href="/apps/codescene-delta-analysis"]');
+        const issueBannerBody = root.querySelector('.comment-body.markdown-body');
+        const isIssueBanner = isTimelineComment &&
+            !isCodeRabbitBanner &&
+            !isSourceryBanner &&
+            !isCodeScene &&
+            issueBannerBody &&
+            isIssueBannerRoot(root, issueBannerBody);
 
         // 3. App-specific logic
         if (isCodeScene) {
@@ -809,6 +1041,24 @@
                 if (kebab) kebab.insertAdjacentElement('beforebegin', copyBtn);
                 else actions.prepend(copyBtn);
             }
+        }
+
+        if (isIssueBanner) {
+            const copyBtn = makeHeaderButton('Copy review feedback context', COPY_ICON_PATH_D, { viewBox: '0 0 16 16' });
+            copyBtn.addEventListener('click', e => {
+                e.preventDefault();
+                e.stopPropagation();
+
+                const output = buildIssueBannerReviewMessage(issueBannerBody);
+                if (output) {
+                    createDisplayModal('Review Feedback Context', output);
+                } else {
+                    copyBtn.classList.add('color-fg-danger');
+                    copyBtn.setAttribute('title', 'Could not build review feedback context for this PR description.');
+                }
+            });
+            if (kebab) kebab.insertAdjacentElement('beforebegin', copyBtn);
+            else actions.prepend(copyBtn);
         }
 
         // 4. Standard Generic Buttons
