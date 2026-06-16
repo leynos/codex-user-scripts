@@ -282,7 +282,7 @@
             '',
             `Include the issue number as \`(#${issueNumber})\` in the PR title, and state \`Closes #${issueNumber}\` in the PR summary.`,
             '',
-            'Use `coderabbit review --agent` to validate your work after each major milestone, and clear all concerns prior to moving  onto the next. It is important that all applicable code quality and correctness gates succeed **before** each CodeRabbit review is requested, as CodeRabbit should not be used for errors that can be caught deterministically. If the code rabbit rate limit is exceeded, sleep (use the `vsleep` command) for $(shuf -i 15-30 -n 1) minutes before trying again. You\'re not in any rush, and there is no wallclock time limit for this task.',
+            'Use `coderabbit review --agent` to validate your work after each major milestone, and clear all concerns prior to moving  onto the next. It is important that all applicable code quality and correctness gates succeed **before** each CodeRabbit review is requested, as CodeRabbit should not be used for errors that can be caught deterministically. If the code rabbit rate limit is exceeded, sleep (use the `vsleep` command) for $(shuf -i 45-90 -n 1) minutes before trying again. You\'re not in any rush, and there is no wallclock time limit for this task. Note that the wakeup tool does not work in this environment, so you must foreground review tasks.',
             '',
             'Commit your changes frequently so you have an easy rollback and your work history can be reviewed through git timetravel.',
         ].join('\n');
